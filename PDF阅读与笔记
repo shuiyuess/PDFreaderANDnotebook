@@ -1,0 +1,2544 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF 阅读器 &amp; 笔记</title>
+  <script>
+    // 加载 docx 库（异步加载，多个 CDN 源备选）
+    window.docxLoaded = false;
+    
+    const cdnSources = [
+      'https://unpkg.com/docx',
+      'https://cdn.jsdelivr.net/npm/docx'
+    ];
+    
+    function loadDocxLib() {
+      let currentIndex = 0;
+      
+      const tryLoad = (index) => {
+        if (index >= cdnSources.length) {
+          console.warn('所有 docx CDN 源均加载失败');
+          return;
+        }
+        
+        const script = document.createElement('script');
+        script.src = cdnSources[index];
+        script.async = true;
+        script.crossOrigin = 'anonymous';
+        
+        script.onload = () => {
+          window.docxLoaded = true;
+          console.log('✓ docx 库加载成功，来自:', cdnSources[index]);
+        };
+        
+        script.onerror = () => {
+          console.warn(`✗ CDN ${index + 1} 加载失败，尝试下一个源...`);
+          tryLoad(index + 1);
+        };
+        
+        try {
+          document.head.appendChild(script);
+        } catch (e) {
+          console.error('添加脚本失败:', e);
+          tryLoad(index + 1);
+        }
+      };
+      
+      tryLoad(0);
+    }
+    
+    // 页面加载完成后加载库
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', loadDocxLib);
+    } else {
+      loadDocxLib();
+    }
+  </script>
+  <style>
+    :root {
+      --bg:     #0d1117; --bg2:    #161b22; --bg3:    #1c2128;
+      --border: #30363d; --text:   #e6edf3; --text2:  #8b949e;
+      --accent: #58a6ff; --accent2:#79c0ff; --green:  #3fb950;
+      --red:    #f85149; --yellow: #d29922;
+    }
+    /* 亮色模式主题 */
+    body.light-mode {
+      --bg:     #ffffff; --bg2:    #f6f8fa; --bg3:    #eaeef2;
+      --border: #d0d7de; --text:   #24292f; --text2:  #57606a;
+      --accent: #0969da; --accent2:#0860ca; --green:  #1a7f37;
+      --red:    #cf222e; --yellow: #9e6a03;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: 'Microsoft YaHei', 'PingFang SC', 'Segoe UI', sans-serif;
+      height: 100vh; display: flex; flex-direction: column; overflow: hidden; font-size: 14px;
+    }
+    #header {
+      background: var(--bg2); border-bottom: 1px solid var(--border);
+      padding: 0 14px; height: 48px; display: flex; align-items: center;
+      gap: 10px; flex-shrink: 0; z-index: 10;
+    }
+    #header h1 { font-size: 15px; font-weight: 700; color: var(--accent); white-space: nowrap; }
+    .v-sep { width: 1px; height: 22px; background: var(--border); flex-shrink: 0; }
+    button {
+      font-family: inherit; cursor: pointer; border: none; border-radius: 6px;
+      font-size: 12px; white-space: nowrap; transition: opacity .15s, background .15s, border-color .15s;
+    }
+    button.btn { background: var(--accent); color: #000; padding: 5px 14px; font-weight: 700; }
+    button.btn:hover { background: var(--accent2); }
+    button.ghost { background: transparent; color: var(--text2); border: 1px solid var(--border); padding: 4px 10px; }
+    button.ghost:hover { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,.07); }
+    #currentFilePath { flex: 1; color: var(--text2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    #currentFilePath span { color: var(--text); font-weight: 500; }
+    #main { display: flex; flex: 1; overflow: hidden; }
+    #sidebar {
+      width: 270px; min-width: 150px; max-width: 500px;
+      background: var(--bg2); border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden;
+    }
+    #sidebarTop { padding: 7px 8px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+    #searchInput {
+      flex: 1; min-width: 0; background: var(--bg3); border: 1px solid var(--border);
+      color: var(--text); border-radius: 6px; padding: 5px 9px;
+      font-size: 12px; font-family: inherit; outline: none;
+    }
+    #searchInput:focus { border-color: var(--accent); }
+    #searchInput::placeholder { color: var(--text2); }
+    #fileCount { font-size: 11px; color: var(--text2); white-space: nowrap; }
+    #fileList { flex: 1; overflow-y: auto; padding: 4px 0; }
+    #fileList::-webkit-scrollbar { width: 5px; }
+    #fileList::-webkit-scrollbar-track { background: transparent; }
+    #fileList::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    #fileList::-webkit-scrollbar-thumb:hover { background: var(--text2); }
+    .folder-row { display: flex; align-items: center; gap: 5px; padding: 5px 8px; cursor: pointer; color: var(--text2); font-size: 12px; user-select: none; }
+    .folder-row:hover { background: var(--bg3); color: var(--text); }
+    .folder-arrow { font-size: 9px; transition: transform .15s; display: inline-block; }
+    .folder-row.collapsed .folder-arrow { transform: rotate(-90deg); }
+    .folder-count { margin-left: auto; font-size: 10px; background: var(--bg3); padding: 1px 5px; border-radius: 8px; border: 1px solid var(--border); }
+    .file-row { display: flex; align-items: center; gap: 6px; padding: 4px 8px; cursor: pointer; font-size: 12px; color: var(--text2); border-left: 2px solid transparent; overflow: hidden; }
+    .file-row:hover { background: var(--bg3); color: var(--text); }
+    .file-row.active { background: rgba(88,166,255,.1); color: var(--accent); border-left-color: var(--accent); }
+    .file-row.pick-source { outline: 1px dashed rgba(210, 153, 34, .6); }
+    .file-row.pick-source.selected { background: rgba(210, 153, 34, .20); color: #ffd58a; border-left-color: var(--yellow); }
+    .file-row.pick-target { outline: 1px dashed rgba(88,166,255,.55); }
+    .file-row.pick-target.selected { background: rgba(88,166,255,.20); color: var(--accent2); border-left-color: var(--accent2); }
+    .file-row.archived { border-left-color: transparent; color: #c9d1d9; }
+    .file-row.archived:hover { background: rgba(210, 153, 34, .08); color: #ffd58a; }
+    .file-row.archived.active { background: rgba(210, 153, 34, .16); color: #ffd58a; border-left-color: var(--yellow); }
+    .file-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .note-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+    .section-title { margin-top: 6px; padding: 6px 10px 4px; font-size: 11px; color: var(--text2); border-top: 1px dashed var(--border); }
+    .empty-hint { color: var(--text2); font-size: 12px; text-align: center; padding: 28px 14px; line-height: 2; }
+    .empty-hint strong { color: var(--accent); }
+    #vResizer { width: 4px; background: transparent; cursor: col-resize; flex-shrink: 0; transition: background .15s; }
+    #vResizer:hover, #vResizer.drag { background: var(--accent); }
+    #pdfArea { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--bg3); }
+    #pdfViewer { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--bg3); }
+    #pdfFrame { flex: 1; width: 100%; border: none; display: none; background: #fff; }
+    #welcomeScreen {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      flex: 1; min-height: 300px; color: var(--text2); text-align: center; gap: 14px; padding: 40px;
+    }
+    .big-icon { font-size: 60px; opacity: .5; }
+    #welcomeScreen h2 { color: var(--text); font-size: 18px; }
+    #welcomeScreen p { font-size: 13px; line-height: 1.9; max-width: 420px; }
+    .tip-row { font-size: 11px; opacity: .7; }
+    #hResizer { width: 4px; background: transparent; cursor: ew-resize; flex-shrink: 0; transition: background .15s; }
+    #hResizer:hover, #hResizer.drag { background: var(--accent); }
+    #notesPanel { width: 550px; min-width: 180px; max-width: 600px; background: var(--bg2); border-left: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; }
+    #notesTabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); padding: 0; flex-shrink: 0; background: var(--bg2); }
+    .notes-tab { flex: 0 1 auto; padding: 8px 12px; border: none; font-size: 12px; cursor: pointer; color: var(--text2); background: transparent; border-bottom: 2px solid transparent; white-space: nowrap; transition: color .15s, border-color .15s; font-family: inherit; }
+    .notes-tab:hover { color: var(--text); }
+    .notes-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .notes-view { display: none; flex-direction: column; flex: 1; overflow: hidden; }
+    .notes-view.active { display: flex; }
+    #notesEditView { flex-direction: column; }
+    #recentEditView { flex-direction: column; }
+    #notesHeader { padding: 5px 12px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 12px; background: var(--bg2); }
+    #notesTitle { font-weight: 700; color: var(--accent); white-space: nowrap; }
+    #notesForFile { flex: 1; color: var(--text2); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #saveIndicator { font-size: 11px; white-space: nowrap; min-width: 80px; text-align: right; }
+    #notesTextarea { min-height: 300px; flex: 1; background: var(--bg2); border: none; color: var(--text); padding: 10px 14px; font-size: 13px; font-family: 'Microsoft YaHei', Consolas, monospace; resize: none; outline: none; line-height: 1.75; overflow-y: auto; }
+    #notesTextarea::placeholder { color: var(--text2); }
+    #notesTextarea:disabled { cursor: not-allowed; opacity: .45; }
+    #noteImageResizer { height: 4px; background: transparent; cursor: ns-resize; flex-shrink: 0; transition: background .15s; }
+    #noteImageResizer:hover, #noteImageResizer.drag { background: var(--accent); }
+    #notesImagePreviewWrapper {
+      display: flex;
+      flex-direction: column;
+      flex: 0 0 auto;
+      background: var(--bg3);
+      border-top: 1px dashed var(--border);
+      overflow: hidden;
+      max-height: 500px;
+      transition: max-height .3s ease;
+    }
+    #notesImagePreviewWrapper.hidden {
+      max-height: 40px;
+    }
+    #notesImagePreviewHeader {
+      padding: 8px 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+      border-bottom: 1px dashed var(--border);
+      background: var(--bg2);
+    }
+    #toggleImagePreviewBtn {
+      transition: transform .2s;
+    }
+    #notesImagePreviewWrapper.hidden #toggleImagePreviewBtn {
+      transform: rotate(180deg);
+    }
+    #notesImagePreview {
+      min-height: 30px;
+      overflow: auto;
+      padding: 8px 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      flex: 1;
+      background: var(--bg3);
+    }
+    .preview-empty { font-size: 11px; color: var(--text2); }
+    #recentEditList {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+    .recent-edit-date-group {
+      padding: 0;
+    }
+    .recent-edit-date-header {
+      padding: 8px 12px 4px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent);
+      background: rgba(88,166,255,.08);
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .recent-edit-item {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: background .15s;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      overflow: hidden;
+    }
+    .recent-edit-item:hover {
+      background: rgba(88,166,255,.07);
+    }
+    .recent-edit-time {
+      font-size: 11px;
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .recent-edit-file {
+      font-size: 11px;
+      color: var(--text2);
+    }
+    .recent-edit-content {
+      font-size: 12px;
+      color: var(--text);
+      line-height: 1.5;
+      word-break: break-word;
+      white-space: pre-wrap;
+      max-height: 60px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #recentEditEmpty {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--text2);
+      font-size: 12px;
+    }
+    .preview-item { display: flex; flex-direction: column; gap: 4px; width: 190px; }
+    .note-preview-img {
+      width: 190px;
+      height: 150px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #fff;
+      object-fit: contain;
+      cursor: zoom-in;
+    }
+    .preview-link {
+      font-size: 11px;
+      color: var(--accent2);
+      text-decoration: underline;
+      cursor: pointer;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #imageViewer {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,.72);
+      z-index: 1200;
+      padding: 24px;
+    }
+    #imageViewer.show { display: flex; }
+    #imageViewerInner {
+      max-width: 92vw;
+      max-height: 92vh;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    #imageViewerTitle { font-size: 12px; color: var(--text2); max-width: 88vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #imageViewerImg { max-width: 90vw; max-height: 82vh; object-fit: contain; border-radius: 6px; background: var(--bg); }
+    #imageViewerClose {
+      align-self: flex-end;
+      border: 1px solid var(--border);
+      background: var(--bg3);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    body.layout-dragging #pdfFrame { pointer-events: none; }
+    body.layout-dragging #sidebar,
+    body.layout-dragging #notesPanel { will-change: width; }
+    #toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(60px);
+      background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+      padding: 8px 20px; border-radius: 8px; font-size: 13px;
+      box-shadow: 0 4px 20px rgba(0,0,0,.5); transition: transform .25s; z-index: 999; white-space: nowrap;
+    }
+    #toast.show { transform: translateX(-50%) translateY(0); }
+    #saveNotification {
+      position: fixed; top: 8px; right: 12px; 
+      background: var(--green); color: #000; padding: 8px 14px; border-radius: 6px;
+      font-size: 12px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.3);
+      opacity: 0; transition: opacity .3s; z-index: 1000; white-space: nowrap;
+    }
+    #saveNotification.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+<div id="header">
+  <h1>📖 PDF 阅读器</h1>
+  <div class="v-sep"></div>
+  <button class="btn" id="openBtn">📂 选择文件夹</button>
+  <div style="position: relative; display: inline-block;">
+    <button class="ghost" id="historyBtn" title="最近打开的文件夹">📋 历史</button>
+    <div id="historyMenu" style="display: none; position: absolute; top: 100%; left: 0; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; min-width: 200px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,.3);"></div>
+  </div>
+  <button class="ghost" id="resetLayoutBtn" title="恢复默认三栏宽度">↺ 重置布局</button>
+  <button class="ghost" id="themeToggleBtn" title="切换亮色/暗色主题">🌙 夜间</button>
+  <button class="ghost" id="migrateNoteBtn" title="选择历史笔记后，再选择目标PDF进行迁移">🔀 迁移笔记</button>
+  <div id="currentFilePath">当前文件：<span id="currentFileName">未选择</span></div>
+  <button class="ghost" id="importBtn" title="从 pdf笔记.json 文件导入笔记（与现有笔记合并）">📥 导入笔记</button>
+  <button class="ghost" id="exportBtn" title="将所有笔记导出为 pdf笔记.json（可重新导入）">📤 导出笔记</button>
+  <button class="ghost" id="exportWordBtn" title="将所有笔记和图片导出为 Word 文档（按文件夹序号标注）">📄 导出 Word</button>
+  <button class="ghost" id="clearNoteBtn" title="清除当前文件的笔记">🗑 清除笔记</button>
+</div>
+
+<div id="main">
+  <div id="sidebar">
+    <div id="sidebarTop">
+      <input id="searchInput" placeholder="🔍 搜索文件名…" autocomplete="off" />
+      <span id="fileCount"></span>
+    </div>
+    <div id="fileList">
+      <div class="empty-hint">点击 <strong>选择文件夹</strong><br>打开包含 PDF 的目录</div>
+    </div>
+  </div>
+
+  <div id="vResizer"></div>
+
+  <div id="pdfArea">
+    <div id="pdfViewer">
+      <div id="welcomeScreen">
+        <div class="big-icon">📚</div>
+        <h2>PDF 阅读器 &amp; 笔记</h2>
+        <p>点击左上角 <strong style="color:var(--accent)">选择文件夹</strong> 打开目录，<br>左侧面板会列出所有 PDF 文件，点击即可阅读。</p>
+        <p class="tip-row">
+          💾 笔记实时写入所选文件夹的 <code style="color:var(--accent);font-size:11px">文件夹名pdf笔记.json</code>，随文件夹携带<br>
+          ✂️ 可直接在 PDF 内选中文字并复制 · 浏览器自带翻页/搜索/打印工具栏<br>
+          📥 支持导入旧笔记 · 文件更名后在 json 中修改对应键名即可迁移<br>
+          🔖 点击 ▶⚠💡⏳ 快速创建格式化块 · Ctrl+Q 插入时间和页码
+        </p>
+      </div>
+      <iframe id="pdfFrame" title="PDF 阅读区"></iframe>
+    </div>
+
+  </div>
+
+  <div id="hResizer"></div>
+
+  <div id="notesPanel">
+    <div id="notesTabs">
+      <button class="notes-tab active" data-view="edit" id="editTabBtn">📝 笔记编辑</button>
+      <button class="notes-tab" data-view="recent" id="recentTabBtn">🕐 最近编辑</button>
+    </div>
+    <div id="notesEditView" class="notes-view active">
+    <div id="notesHeader">
+      <span id="notesTitle">📝 笔记</span>
+      <span id="notesForFile">— 选择 PDF 后可编辑笔记 —</span>
+      <div style="display: flex; gap: 4px; margin-left: auto;">
+        <button class="ghost" id="blockKeyBtn" title="插入关键点块 [P页] ▶ 标题" style="padding: 4px 8px; font-size: 12px;">▶</button>
+        <button class="ghost" id="blockWarnBtn" title="插入警告块 [P页] ⚠ 标题" style="padding: 4px 8px; font-size: 12px;">⚠</button>
+        <button class="ghost" id="blockIdeaBtn" title="插入想法块 [P页] 💡 标题" style="padding: 4px 8px; font-size: 12px;">💡</button>
+        <button class="ghost" id="blockTodoBtn" title="插入待办块 [P页] ⏳ 标题" style="padding: 4px 8px; font-size: 12px;">⏳</button>
+      </div>
+      <button class="ghost" id="insertTimeBtn" title="在笔记光标位置插入当前时间日期" style="padding: 4px 8px; font-size: 12px;">🕐 当前时间</button>
+      <span id="saveIndicator"></span>
+    </div>
+    <textarea id="notesTextarea" disabled
+      placeholder="在此输入或粘贴笔记内容…&#10;&#10;• 笔记实时写入所选文件夹根目录的 文件夹名pdf笔记.json（可与 PDF 一起备份/迁移）&#10;• 粘贴图片优先保存到「文件夹名笔记图片/」目录并写入相对路径（非 Base64）&#10;• 点击 ▶⚠💡⏳ 快速创建格式化块（支持页码和标题）・Ctrl+Q 插入时间和页码&#10;• 支持 Ctrl+V 粘贴文字/图片 / Ctrl+Z 撤销"></textarea>
+    <div id="noteImageResizer"></div>
+    <div id="notesImagePreviewWrapper">
+      <div id="notesImagePreviewHeader">
+        <span style="font-size: 12px; color: var(--text2);">📷 图片预览</span>
+        <button id="toggleImagePreviewBtn" class="ghost" title="隐藏/显示图片预览框" style="padding: 2px 6px; font-size: 12px; margin-left: auto;">▲</button>
+      </div>
+      <div id="notesImagePreview"><span class="preview-empty">暂无图片</span></div>
+    </div>
+    </div>
+    <div id="recentEditView" class="notes-view">
+      <div id="recentEditList"></div>
+      <div id="recentEditEmpty" style="display: flex;">
+        <div style="text-align: center;">
+          <div style="font-size: 32px; margin-bottom: 10px;">📭</div>
+          <div>暂无编辑记录</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="imageViewer">
+  <div id="imageViewerInner">
+    <button id="imageViewerClose">关闭</button>
+    <div id="imageViewerTitle"></div>
+    <img id="imageViewerImg" alt="图片预览" />
+  </div>
+</div>
+
+<div id="saveNotification">✓ 笔记已保存</div>
+
+<div id="toast"></div>
+
+<script>
+'use strict';
+
+const NOTES_PREFIX = 'pdfReader_v1::';
+
+let allFiles       = [];
+let currentKey     = null;
+let saveTimer      = null;
+let saveNotificationTimer = null;
+let _prevBlobUrl   = null;
+let notesData      = {};    // 内存笔记总表 { relativePath: content }
+let notesHandle    = null;  // pdf笔记.json 的 FileSystemFileHandle
+let fileWriteTimer = null;
+let rootDirHandle  = null;
+let imageDirHandle = null;
+const imageHandleMap = new Map();
+let previewObjectUrls = [];
+let viewerObjectUrl = null;
+let migrateMode    = false;
+let migrateStep    = null;  // 'source' | 'target' | null
+let migrateSource  = null;
+let imageDirName   = '笔记图片';  // 图片文件夹名称，会根据选择的文件夹动态设置
+const expanded     = new Set();
+const FOLDER_HISTORY_KEY = 'pdfReader_folderHistory';
+let folderHistory = [];  // 最近访问的文件夹列表
+let directoryHandleDB = null;
+
+// 初始化 IndexedDB 用于保存 DirectoryHandle
+function initDirectoryHandleDB() {
+  return new Promise((resolve) => {
+    const request = indexedDB.open('pdfReaderDB', 1);
+    request.onerror = () => {
+      console.warn('IndexedDB 初始化失败');
+      resolve(null);
+    };
+    request.onsuccess = () => {
+      directoryHandleDB = request.result;
+      resolve(directoryHandleDB);
+    };
+    request.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('dirHandles')) {
+        db.createObjectStore('dirHandles', { keyPath: 'name' });
+      }
+    };
+  });
+}
+
+// 保存 DirectoryHandle 到 IndexedDB
+async function saveDirHandleToDB(dirHandle) {
+  if (!directoryHandleDB) return;
+  try {
+    const tx = directoryHandleDB.transaction('dirHandles', 'readwrite');
+    const store = tx.objectStore('dirHandles');
+    store.put({ name: dirHandle.name, handle: dirHandle, timestamp: new Date().toISOString() });
+  } catch (e) {
+    console.warn('保存 DirectoryHandle 失败', e);
+  }
+}
+
+// 从 IndexedDB 读取 DirectoryHandle
+async function getDirHandleFromDB(folderName) {
+  if (!directoryHandleDB) return null;
+  return new Promise((resolve) => {
+    const tx = directoryHandleDB.transaction('dirHandles', 'readonly');
+    const store = tx.objectStore('dirHandles');
+    const request = store.get(folderName);
+    request.onsuccess = () => {
+      const data = request.result;
+      resolve(data ? data.handle : null);
+    };
+    request.onerror = () => resolve(null);
+  });
+}
+
+const $ = id => document.getElementById(id);
+const openBtn         = $('openBtn');
+const fileList        = $('fileList');
+const fileCount       = $('fileCount');
+const searchInput     = $('searchInput');
+const welcomeScreen   = $('welcomeScreen');
+const pdfFrame        = $('pdfFrame');
+const currentFileName = $('currentFileName');
+const notesTextarea   = $('notesTextarea');
+const saveIndicator   = $('saveIndicator');
+const notesForFile    = $('notesForFile');
+const migrateNoteBtn  = $('migrateNoteBtn');
+const notesImagePreview = $('notesImagePreview');
+const imageViewer = $('imageViewer');
+const imageViewerImg = $('imageViewerImg');
+const imageViewerTitle = $('imageViewerTitle');
+const imageViewerClose = $('imageViewerClose');
+const historyBtn      = $('historyBtn');
+const historyMenu     = $('historyMenu');
+const saveNotification = $('saveNotification');
+
+/* ── 加载和保存文件夹历史记录 ── */
+function loadFolderHistory() {
+  const stored = localStorage.getItem(FOLDER_HISTORY_KEY);
+  folderHistory = stored ? JSON.parse(stored) : [];
+  updateHistoryMenu();
+}
+
+function saveFolderToHistory(dirHandle) {
+  const folderName = dirHandle.name;
+  // 删除重复项（名称相同的），保留最新的
+  folderHistory = folderHistory.filter(item => item.name !== folderName);
+  // 添加到最前面
+  folderHistory.unshift({ name: folderName, timestamp: new Date().toISOString() });
+  // 只保留最近20个
+  folderHistory = folderHistory.slice(0, 20);
+  localStorage.setItem(FOLDER_HISTORY_KEY, JSON.stringify(folderHistory));
+  // 同时保存 DirectoryHandle 到 IndexedDB
+  saveDirHandleToDB(dirHandle);
+  updateHistoryMenu();
+}
+
+function updateHistoryMenu() {
+  historyMenu.innerHTML = '';
+  if (!folderHistory.length) {
+    historyMenu.innerHTML = '<div style="padding: 8px 12px; color: var(--text2); font-size: 12px;">暂无历史记录</div>';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  folderHistory.forEach((item, idx) => {
+    const div = document.createElement('div');
+    div.style.cssText = 'padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text2); transition: background .15s;';
+    div.innerHTML = `<span style="display: block; color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(item.name)}</span>
+      <span style="font-size: 10px; opacity: .6;">${new Date(item.timestamp).toLocaleString('zh-CN')}</span>`;
+    div.addEventListener('mouseover', () => div.style.background = 'var(--bg3)');
+    div.addEventListener('mouseout', () => div.style.background = '');
+    div.addEventListener('click', async () => {
+      historyMenu.style.display = 'none';
+      toast('正在打开文件夹...');
+      try {
+        // 先尝试从 IndexedDB 恢复 DirectoryHandle
+        let dir = await getDirHandleFromDB(item.name);
+        if (dir) {
+          try {
+            // 验证 handle 是否仍然有效
+            await dir.queryPermission({ mode: 'readwrite' });
+            await openFolder(dir);
+            return;
+          } catch (e) {
+            // handle 无效，需要重新获取
+            dir = null;
+          }
+        }
+        // 如果没有保存的 handle 或已失效，需要用户重新授权，但引导更友好
+        toast('需要重新授权，请选择文件夹确认', false);
+        const selectedDir = await window.showDirectoryPicker({ mode: 'readwrite' });
+        if (selectedDir.name === item.name) {
+          await openFolder(selectedDir);
+        } else {
+          toast('选择的文件夹与历史记录不匹配', true);
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          toast('⚠ 打开失败：' + e.message, true);
+        }
+      }
+    });
+    frag.appendChild(div);
+  });
+  historyMenu.appendChild(frag);
+}
+
+historyBtn.addEventListener('click', () => {
+  historyMenu.style.display = historyMenu.style.display === 'none' ? 'block' : 'none';
+});
+
+document.addEventListener('click', (e) => {
+  if (!historyBtn.contains(e.target) && !historyMenu.contains(e.target)) {
+    historyMenu.style.display = 'none';
+  }
+});
+
+/* ── 打开文件夹的核心逻辑 ── */
+async function openFolder(dir) {
+  rootDirHandle = dir;
+  imageDirName = dir.name + '笔记图片';
+  notesData = {};
+  allFiles = [];
+  await scanDir(dir, '');
+  allFiles.sort((a, b) => naturalSort(a.relativePath, b.relativePath));
+  await loadNotesFile(dir, dir.name);
+  await rebuildImageHandleMap();
+  saveFolderToHistory(dir);
+  renderSidebar();
+  toast(`已加载 ${allFiles.length} 个 PDF 文件`);
+}
+
+/* ── 选择文件夹 ── */
+openBtn.addEventListener('click', async () => {
+  if ('showDirectoryPicker' in window) {
+    try {
+      const dir = await window.showDirectoryPicker({ mode: 'readwrite' });
+      await openFolder(dir);
+    } catch (e) {
+      if (e.name !== 'AbortError') toast('⚠ 打开失败：' + e.message, true);
+    }
+  } else {
+    // Firefox 回退：webkitdirectory input
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = '.pdf'; inp.setAttribute('webkitdirectory', '');
+    inp.addEventListener('change', () => {
+      const files = Array.from(inp.files).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+      if (!files.length) return;
+      const root = files[0].webkitRelativePath.split('/')[0];
+      allFiles = files.map(f => {
+        const rel = f.webkitRelativePath.startsWith(root + '/') ? f.webkitRelativePath.slice(root.length + 1) : (f.webkitRelativePath || f.name);
+        return { name: f.name, relativePath: rel, fileObj: f };
+      });
+      allFiles.sort((a, b) => a.relativePath.localeCompare(b.relativePath, 'zh'));
+      // Firefox 无法写文件，清空笔记（Firefox 无法区分文件夹）
+      rootDirHandle = null;
+      imageDirHandle = null;
+      imageHandleMap.clear();
+      notesHandle = null;
+      notesData   = {};
+      renderSidebar();
+      toast(`已加载 ${allFiles.length} 个 PDF 文件（Firefox 模式，笔记需在数据库中管理）`);
+    });
+    inp.click();
+  }
+});
+
+// 页面加载时恢复历史记录和初始化 IndexedDB
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', async () => {
+    await initDirectoryHandleDB();
+    loadFolderHistory();
+    initThemeMode();
+  });
+} else {
+  initDirectoryHandleDB();
+  loadFolderHistory();
+  initThemeMode();
+}
+
+/* ── 主题切换功能 ── */
+function initThemeMode() {
+  const themeBtn = $('themeToggleBtn');
+  const savedTheme = localStorage.getItem('pdfReaderTheme') || 'dark';
+  
+  // 应用保存的主题
+  if (savedTheme === 'light') {
+    document.body.classList.add('light-mode');
+    themeBtn.textContent = '☀️ 白天';
+  } else {
+    document.body.classList.remove('light-mode');
+    themeBtn.textContent = '🌙 夜间';
+  }
+  
+  // 主题切换按钮事件
+  themeBtn.addEventListener('click', () => {
+    const isLightMode = document.body.classList.contains('light-mode');
+    if (isLightMode) {
+      // 切换到暗色
+      document.body.classList.remove('light-mode');
+      localStorage.setItem('pdfReaderTheme', 'dark');
+      themeBtn.textContent = '🌙 夜间';
+      toast('已切换到暗色主题');
+    } else {
+      // 切换到亮色
+      document.body.classList.add('light-mode');
+      localStorage.setItem('pdfReaderTheme', 'light');
+      themeBtn.textContent = '☀️ 白天';
+      toast('已切换到亮色主题');
+    }
+  });
+}
+
+async function scanDir(dirHandle, parent) {
+  const entries = [];
+  for await (const [name, handle] of dirHandle.entries()) entries.push([name, handle]);
+  entries.sort(([a], [b]) => naturalSort(a, b));
+  for (const [name, handle] of entries) {
+    const path = parent ? `${parent}/${name}` : name;
+    if (handle.kind === 'file' && name.toLowerCase().endsWith('.pdf')) allFiles.push({ name, relativePath: path, handle });
+    else if (handle.kind === 'directory') await scanDir(handle, path);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   笔记持久化：读写所选文件夹根目录中的 pdf笔记.json
+   格式：{
+     "version": 1, "updated": "ISO时间",
+     "notes":    { "相对路径": "内容" },   // 当前文件夹中存在的 PDF
+     "archived": { "相对路径": "内容" }    // 已删除/更名的历史遗留笔记
+   }
+   优势：随文件夹一起备份/迁移，不依赖浏览器；localStorage 作为双重备份
+══════════════════════════════════════════════════════════════ */
+async function loadNotesFile(dirHandle, folderName = 'pdf笔记') {
+  const notesFileName = `${folderName}pdf笔记.json`;
+  try {
+    notesHandle = await dirHandle.getFileHandle(notesFileName, { create: true });
+    const file  = await notesHandle.getFile();
+    const text  = await file.text();
+    if (text.trim()) {
+      const parsed = JSON.parse(text);
+      notesData = { ...(parsed.notes || {}), ...(parsed.archived || {}) };
+    } else {
+      notesData = {};
+    }
+  } catch(e) {
+    notesHandle = null;
+    console.warn(`笔记文件 "${notesFileName}" 加载失败，回退到空笔记`, e);
+  }
+  // 若有笔记数据，立即同步到文件
+  if (notesHandle && Object.keys(notesData).length) scheduleFileWrite();
+  const count = Object.keys(notesData).length;
+  if (count) toast(`已加载笔记文件，共 ${count} 条`);
+}
+
+function scheduleFileWrite() {
+  clearTimeout(fileWriteTimer);
+  fileWriteTimer = setTimeout(flushNotesFile, 600);
+}
+
+async function flushNotesFile() {
+  if (!notesHandle) return;
+  try {
+    const fileSet = new Set(allFiles.map(f => f.relativePath));
+    const currentNotes  = {};  // 当前文件夹中仍存在的 PDF
+    const archivedNotes = {};  // 已删除/更名的历史遗留笔记
+
+    // ① 按文件树顺序写入「当前」笔记
+    allFiles.forEach(({ relativePath: k }) => {
+      if (notesData[k]) currentNotes[k] = notesData[k];
+    });
+    // ② 历史遗留笔记按字母排序写入「archived」
+    Object.keys(notesData)
+      .filter(k => !fileSet.has(k))
+      .sort((a, b) => naturalSort(a, b))
+      .forEach(k => { archivedNotes[k] = notesData[k]; });
+
+    const payload = {
+      version: 1,
+      updated: new Date().toISOString(),
+      notes:   currentNotes
+    };
+    if (Object.keys(archivedNotes).length)
+      payload.archived = archivedNotes;  // 无历史笔记则省略该字段
+
+    const writable = await notesHandle.createWritable();
+    await writable.write(JSON.stringify(payload, null, 2));
+    await writable.close();
+  } catch(e) { console.warn('写入 pdf笔记.json 失败', e); }
+}
+
+// 读取一条笔记（先查内存，再查 localStorage 作为最终兜底）
+function getNotes(key) {
+  return notesData[key] || localStorage.getItem(NOTES_PREFIX + key) || '';
+}
+
+// 保存一条笔记（同步写 localStorage + 异步写文件）
+function setNotes(key, val) {
+  if (val.trim()) {
+    notesData[key] = val;
+    localStorage.setItem(NOTES_PREFIX + key, val);
+  } else {
+    delete notesData[key];
+    localStorage.removeItem(NOTES_PREFIX + key);
+  }
+  scheduleFileWrite();
+}
+
+async function ensureImageDirHandle() {
+  if (!rootDirHandle) return null;
+  if (imageDirHandle) return imageDirHandle;
+  imageDirHandle = await rootDirHandle.getDirectoryHandle(imageDirName, { create: true });
+  return imageDirHandle;
+}
+
+async function rebuildImageHandleMap() {
+  imageHandleMap.clear();
+  if (!rootDirHandle) return;
+  try {
+    const dir = await ensureImageDirHandle();
+    for await (const [name, handle] of dir.entries()) {
+      if (handle.kind === 'file') imageHandleMap.set(`${imageDirName}/${name}`, handle);
+    }
+  } catch (e) {
+    console.warn('图片目录读取失败', e);
+  }
+}
+
+function getImageBaseName() {
+  const raw = (currentKey || currentFileName.textContent || '未命名文件').split('/').pop();
+  const noExt = raw.replace(/\.[^.]+$/, '');
+  return noExt.replace(/[\\/:*?"<>|]+/g, '_').trim() || '未命名文件';
+}
+
+async function savePastedImageFile(file, sequence) {
+  const dir = await ensureImageDirHandle();
+  if (!dir) return null;
+  const ext = (file.type.split('/')[1] || 'png').split(';')[0];
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const base = getImageBaseName();
+  const name = `${base}_${stamp}_${sequence}.${ext}`;
+  const fh = await dir.getFileHandle(name, { create: true });
+  const w = await fh.createWritable();
+  await w.write(await file.arrayBuffer());
+  await w.close();
+  const rel = `${imageDirName}/${name}`;
+  imageHandleMap.set(rel, fh);
+  return { rel, name };
+}
+
+function clearPreviewObjectUrls() {
+  previewObjectUrls.forEach(u => URL.revokeObjectURL(u));
+  previewObjectUrls = [];
+}
+
+async function resolveImageToSrc(path) {
+  if (path.startsWith('data:image/')) return path;
+  if (!imageHandleMap.has(path)) return null;
+  const f = await imageHandleMap.get(path).getFile();
+  return URL.createObjectURL(f);
+}
+
+function closeImageViewer() {
+  imageViewer.classList.remove('show');
+  if (viewerObjectUrl) {
+    URL.revokeObjectURL(viewerObjectUrl);
+    viewerObjectUrl = null;
+  }
+  imageViewerImg.removeAttribute('src');
+}
+
+async function openImageViewer(path, title) {
+  if (viewerObjectUrl) {
+    URL.revokeObjectURL(viewerObjectUrl);
+    viewerObjectUrl = null;
+  }
+  const src = await resolveImageToSrc(path);
+  if (!src) {
+    toast('图片不存在，请重新选择同一文件夹', true);
+    return;
+  }
+  if (!path.startsWith('data:image/')) viewerObjectUrl = src;
+  imageViewerImg.src = src;
+  imageViewerTitle.textContent = title || path;
+  imageViewer.classList.add('show');
+}
+
+async function renderNoteImagePreview() {
+  clearPreviewObjectUrls();
+  if (!notesImagePreview) return;
+  const text = notesTextarea.value || '';
+  const re = /!\[([^\]]*)\]\(([^)]+)\)/g;
+  const items = [];
+  let m;
+  while ((m = re.exec(text)) !== null) items.push({ alt: (m[1] || '').trim(), path: m[2].trim() });
+
+  notesImagePreview.innerHTML = '';
+  if (!items.length) {
+    notesImagePreview.innerHTML = '<span class="preview-empty">暂无图片</span>';
+    return;
+  }
+
+  // 从新到旧排序：反向遍历
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    const p = item.path;
+    const img = document.createElement('img');
+    img.className = 'note-preview-img';
+    img.alt = item.alt || p;
+    const wrap = document.createElement('div');
+    wrap.className = 'preview-item';
+    const link = document.createElement('span');
+    link.className = 'preview-link';
+    link.textContent = item.alt || p;
+    link.title = p;
+    if (p.startsWith('data:image/')) {
+      img.src = p;
+    } else if (imageHandleMap.has(p)) {
+      try {
+        const f = await imageHandleMap.get(p).getFile();
+        const u = URL.createObjectURL(f);
+        previewObjectUrls.push(u);
+        img.src = u;
+      } catch {
+        continue;
+      }
+    } else {
+      continue;
+    }
+    img.addEventListener('click', () => openImageViewer(p, item.alt || p));
+    link.addEventListener('click', () => openImageViewer(p, item.alt || p));
+    wrap.appendChild(img);
+    wrap.appendChild(link);
+    notesImagePreview.appendChild(wrap);
+  }
+
+  if (!notesImagePreview.children.length)
+    notesImagePreview.innerHTML = '<span class="preview-empty">未找到可预览图片（请重新选择同一文件夹）</span>';
+}
+
+imageViewerClose.addEventListener('click', closeImageViewer);
+imageViewer.addEventListener('click', (e) => {
+  if (e.target === imageViewer) closeImageViewer();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && imageViewer.classList.contains('show')) closeImageViewer();
+});
+
+/* ── 插入格式化块（Block）── */
+function showBlockInputDialog(type) {
+  if (!currentKey) { toast('请先选择一个 PDF 文件'); return; }
+  
+  const modal = document.createElement('div');
+  modal.style.cssText = `
+    position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex;
+    align-items: center; justify-content: center; z-index: 2000;
+  `;
+  
+  const dialog = document.createElement('div');
+  dialog.style.cssText = `
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 20px; min-width: 320px; color: var(--text);
+  `;
+  
+  dialog.innerHTML = `
+    <div style="font-weight: 600; margin-bottom: 12px; font-size: 14px;">新建块 - 输入信息</div>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; font-size: 12px; color: var(--text2); margin-bottom: 6px;">页码</label>
+      <input type="number" id="blockPageInput" min="1" max="9999" placeholder="留空则不显示页码" 
+        style="width: 100%; padding: 8px; border: 1px solid var(--border); background: var(--bg3);
+        color: var(--text); border-radius: 6px; font-size: 12px; box-sizing: border-box;">
+    </div>
+    <div style="margin-bottom: 16px;">
+      <label style="display: block; font-size: 12px; color: var(--text2); margin-bottom: 6px;">标题</label>
+      <input type="text" id="blockTitleInput" placeholder="输入标题（可选）" 
+        style="width: 100%; padding: 8px; border: 1px solid var(--border); background: var(--bg3);
+        color: var(--text); border-radius: 6px; font-size: 12px; box-sizing: border-box;">
+    </div>
+    <div style="display: flex; gap: 8px; justify-content: flex-end;">
+      <button style="padding: 6px 14px; border: 1px solid var(--border); background: transparent;
+        color: var(--text); border-radius: 6px; cursor: pointer; font-size: 12px;">取消</button>
+      <button id="blockConfirmBtn" style="padding: 6px 14px; background: var(--accent); color: #000;
+        border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;">确定</button>
+    </div>
+  `;
+  
+  document.body.appendChild(modal);
+  const pageInput = dialog.querySelector('#blockPageInput');
+  const titleInput = dialog.querySelector('#blockTitleInput');
+  const confirmBtn = dialog.querySelector('#blockConfirmBtn');
+  const cancelBtn = dialog.querySelector('button:first-of-type');
+  
+  modal.appendChild(dialog);
+  
+  const close = () => {
+    modal.remove();
+  };
+  
+  const insertBlock = () => {
+    const page = pageInput.value ? parseInt(pageInput.value, 10) : '';
+    const title = titleInput.value.trim() || '标题';
+    
+    const emojiMap = {
+      key: '▶',
+      warn: '⚠',
+      idea: '💡',
+      todo: '⏳'
+    };
+    
+    const emoji = emojiMap[type];
+    const pageStr = page ? `[P${page}] ` : '';
+    const blockText = `\n${pageStr}${emoji} ${title}\n`;
+    
+    close();
+    insertAtCursor(notesTextarea, blockText);
+    scheduleSave();
+    notesTextarea.focus();  // 添加此行，使焦点回到笔记文本框
+  };
+  
+  const handleKeyPress = (e) => {
+    if (e.key === 'Enter') insertBlock();
+  };
+  
+  pageInput.addEventListener('keypress', handleKeyPress);
+  titleInput.addEventListener('keypress', handleKeyPress);
+  confirmBtn.addEventListener('click', insertBlock);
+  cancelBtn.addEventListener('click', close);
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) close();
+  });
+  
+  setTimeout(() => titleInput.focus(), 100);
+}
+let currentPageInput = null;
+
+function showPageInputDialog(autoInsertTime = false) {
+  if (!currentKey) { toast('请先选择一个 PDF 文件'); return; }
+  
+  const modal = document.createElement('div');
+  modal.style.cssText = `
+    position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex;
+    align-items: center; justify-content: center; z-index: 2000;
+  `;
+  
+  const dialog = document.createElement('div');
+  dialog.style.cssText = `
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 20px; min-width: 300px; color: var(--text);
+  `;
+  
+  dialog.innerHTML = `
+    <div style="font-weight: 600; margin-bottom: 12px; font-size: 14px;">输入页码或任意文本（留空则仅插入时间）</div>
+    <input type="text" id="pageTextInput" placeholder="例如：5、前言、附录A" 
+      style="width: 100%; padding: 8px; border: 1px solid var(--border); background: var(--bg3);
+      color: var(--text); border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+    <div style="margin-top: 16px; display: flex; gap: 8px; justify-content: flex-end;">
+      <button style="padding: 6px 14px; border: 1px solid var(--border); background: transparent;
+        color: var(--text); border-radius: 6px; cursor: pointer; font-size: 12px;">取消</button>
+      <button id="pageConfirmBtn" style="padding: 6px 14px; background: var(--accent); color: #000;
+        border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;">确定</button>
+    </div>
+  `;
+  
+  document.body.appendChild(modal);
+  const input = dialog.querySelector('#pageTextInput');
+  const confirmBtn = dialog.querySelector('#pageConfirmBtn');
+  const cancelBtn = dialog.querySelector('button:first-of-type');
+  
+  modal.appendChild(dialog);
+  
+  const close = () => {
+    modal.remove();
+    notesTextarea.focus(); // 关闭后焦点回到笔记输入框
+  };
+  
+  const insertPageText = () => {
+    const userText = input.value.trim();
+    close();
+    
+    let insertText = '';
+    if (userText) {
+      // 有输入内容：插入时间和带括号的文本（或仅文本，取决于 autoInsertTime）
+      if (autoInsertTime) {
+        const now = new Date();
+        const timeStr = now.toLocaleString('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit'
+        });
+        insertText = `[${timeStr}] P(${userText})\n`;
+      } else {
+        insertText = `(${userText})\n`;
+      }
+    } else {
+      // 没有输入内容：仅插入时间（如果 autoInsertTime 为 true）
+      if (autoInsertTime) {
+        const now = new Date();
+        const timeStr = now.toLocaleString('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit'
+        });
+        insertText = `[${timeStr}]\n `;
+      }
+      // 如果 autoInsertTime 为 false 且无输入，则不插入任何内容（保持原样）
+    }
+    
+    if (insertText) {
+      insertAtCursor(notesTextarea, insertText);
+      scheduleSave();
+    }
+    notesTextarea.focus(); // 确保焦点
+  };
+  
+  input.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') insertPageText();
+  });
+  
+  confirmBtn.addEventListener('click', insertPageText);
+  cancelBtn.addEventListener('click', close);
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) close();
+  });
+  
+  setTimeout(() => input.focus(), 100);
+}
+
+/* ── 插入当前时间日期和页码 ── */
+$('insertTimeBtn').addEventListener('click', () => {
+  if (!currentKey) { toast('请先选择一个 PDF 文件'); return; }
+  const now = new Date();
+  const timeStr = now.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+  insertAtCursor(notesTextarea, `[${timeStr}] `);
+  scheduleSave();
+});
+
+/* ── 快捷键：Ctrl+Q 快速插入时间戳和页码 ── */
+document.addEventListener('keydown', (e) => {
+  // Ctrl+Q (Windows/Linux) 或 Cmd+Q (Mac)
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'q') {
+    e.preventDefault();
+    if (!currentKey) { toast('请先选择一个 PDF 文件'); return; }
+    toast('按 Ctrl+Q 快速插入时间和页码');
+    showPageInputDialog(true);  // true 表示同时插入时间戳
+  }
+});
+
+/* ── Block 按钮事件 ── */
+document.getElementById('blockKeyBtn').addEventListener('click', () => showBlockInputDialog('key'));
+document.getElementById('blockWarnBtn').addEventListener('click', () => showBlockInputDialog('warn'));
+document.getElementById('blockIdeaBtn').addEventListener('click', () => showBlockInputDialog('idea'));
+document.getElementById('blockTodoBtn').addEventListener('click', () => showBlockInputDialog('todo'));
+
+function getArchivedNoteKeys(filterText = '') {
+  const fileSet = new Set(allFiles.map(f => f.relativePath));
+  const q = filterText.trim().toLowerCase();
+  return Object.keys(notesData)
+    .filter(k => notesData[k] && !fileSet.has(k) && (!q || k.toLowerCase().includes(q)))
+    .sort((a, b) => naturalSort(a, b));
+}
+
+function makeArchivedNoteRow(path) {
+  const el = document.createElement('div');
+  const isActive = path === currentKey ? ' active' : '';
+  const pickClass = (migrateMode && migrateStep === 'source') ? ' pick-source' : '';
+  const selectedClass = (migrateMode && migrateStep === 'target' && migrateSource === path) ? ' selected' : '';
+  el.className = 'file-row archived' + isActive + pickClass + selectedClass;
+  el.style.paddingLeft = '20px';
+  const name = path.split('/').pop();
+  el.innerHTML = `<span>🗒️</span><span class="file-label" title="${esc(path)}">${esc(name)}</span><span class="note-dot" title="历史笔记"></span>`;
+  el.addEventListener('click', () => {
+    if (migrateMode) {
+      if (migrateStep !== 'source') { toast('请先选择目标 PDF'); return; }
+      migrateSource = path;
+      migrateStep = 'target';
+      renderSidebar();
+      toast('已选择历史笔记，请点击目标 PDF');
+      return;
+    }
+    openArchivedNote(path);
+  });
+  return el;
+}
+
+function openArchivedNote(path) {
+  forceSaveNotes();
+  currentKey = path;
+  currentFileName.textContent = `历史笔记：${path.split('/').pop()}`;
+  notesForFile.textContent = `${path}（未在当前文件夹找到 PDF）`;
+  notesTextarea.disabled = false;
+  notesTextarea.value = getNotes(path);
+  renderNoteImagePreview();
+  saveIndicator.textContent = '';
+  pdfFrame.style.display = 'none';
+  welcomeScreen.style.display = 'flex';
+  renderSidebar();
+  updateRecentEditView();
+}
+
+
+
+/* ── 左侧树形目录（多级嵌套，默认折叠）── */
+function renderSidebar(filter) {
+  if (filter === undefined) filter = searchInput.value.trim();
+  const q = filter.toLowerCase();
+  const visible = q ? allFiles.filter(f => f.relativePath.toLowerCase().includes(q)) : allFiles;
+  const archivedKeys = getArchivedNoteKeys(filter);
+  const visibleNotesCount = Object.keys(notesData).filter(k => notesData[k] && (!q || k.toLowerCase().includes(q))).length;
+  fileCount.textContent = `${visible.length} PDF / ${visibleNotesCount} 笔记`;
+  if (!visible.length && !archivedKeys.length) {
+    fileList.innerHTML = `<div class="empty-hint">${q ? '未找到匹配文件' : '该文件夹中没有 PDF'}</div>`;
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  if (visible.length) renderTreeNode(buildTree(visible), frag, 0);
+  if (archivedKeys.length) {
+    const title = document.createElement('div');
+    title.className = 'section-title';
+    title.textContent = '历史笔记（无对应 PDF）';
+    frag.appendChild(title);
+    archivedKeys.forEach(k => frag.appendChild(makeArchivedNoteRow(k)));
+  }
+  fileList.innerHTML = '';
+  fileList.appendChild(frag);
+}
+
+function buildTree(files) {
+  const root = { children: {}, files: [], path: '' };
+  files.forEach(f => {
+    const parts = f.relativePath.split('/');
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const seg = parts[i];
+      if (!node.children[seg]) {
+        const p = node.path ? `${node.path}/${seg}` : seg;
+        node.children[seg] = { children: {}, files: [], path: p };
+      }
+      node = node.children[seg];
+    }
+    node.files.push(f);
+  });
+  return root;
+}
+
+function renderTreeNode(node, frag, depth) {
+  Object.keys(node.children).sort((a, b) => naturalSort(a, b)).forEach(key => {
+    const child = node.children[key];
+    frag.appendChild(makeFolderRow(child, depth));
+    if (expanded.has(child.path)) renderTreeNode(child, frag, depth + 1);
+  });
+  node.files.forEach(f => frag.appendChild(makeFileRow(f, depth)));
+}
+
+function countFiles(node) {
+  let c = node.files.length;
+  Object.values(node.children).forEach(ch => c += countFiles(ch));
+  return c;
+}
+
+function makeFolderRow(node, depth) {
+  const el = document.createElement('div');
+  const isExp = expanded.has(node.path);
+  el.className = 'folder-row' + (isExp ? '' : ' collapsed');
+  el.style.paddingLeft = (8 + depth * 16) + 'px';
+  el.innerHTML = `<span class="folder-arrow">▼</span><span>📁 ${esc(node.path.split('/').pop())}</span><span class="folder-count">${countFiles(node)}</span>`;
+  el.title = node.path;
+  el.addEventListener('click', () => { isExp ? expanded.delete(node.path) : expanded.add(node.path); renderSidebar(); });
+  return el;
+}
+
+function makeFileRow(file, depth) {
+  const el = document.createElement('div');
+  const isActive = file.relativePath === currentKey ? ' active' : '';
+  const pickClass = (migrateMode && migrateStep === 'target') ? ' pick-target' : '';
+  const selectedClass = '';
+  el.className = 'file-row' + isActive + pickClass + selectedClass;
+  el.style.paddingLeft = (8 + depth * 16 + 12) + 'px';
+  const hasNote = !!notesData[file.relativePath];
+  el.innerHTML = `<span>📄</span><span class="file-label" title="${esc(file.relativePath)}">${esc(file.name)}</span>${hasNote ? '<span class="note-dot" title="有笔记"></span>' : ''}`;
+  el.addEventListener('click', () => {
+    if (migrateMode) {
+      if (migrateStep !== 'target' || !migrateSource) { toast('请先选择历史笔记'); return; }
+      migrateArchivedNote(migrateSource, file.relativePath);
+      return;
+    }
+    openPdf(file);
+  });
+  return el;
+}
+
+function startMigrateMode() {
+  const archived = getArchivedNoteKeys();
+  if (archived.length < 1) {
+    toast('当前没有可迁移的历史笔记');
+    return;
+  }
+  migrateMode = true;
+  migrateStep = 'source';
+  migrateSource = null;
+  renderSidebar();
+  toast('迁移模式：请先点击一条历史笔记');
+}
+
+function stopMigrateMode() {
+  migrateMode = false;
+  migrateStep = null;
+  migrateSource = null;
+  renderSidebar();
+}
+
+function migrateArchivedNote(sourceKey, targetKey) {
+  if (!sourceKey || !targetKey || sourceKey === targetKey) {
+    toast('迁移失败：源或目标无效', true);
+    return;
+  }
+  // 若当前正在编辑源历史笔记，优先使用编辑区最新内容
+  const src = currentKey === sourceKey ? (notesTextarea.value || '') : (notesData[sourceKey] || '');
+  if (!src.trim()) {
+    toast('源历史笔记为空，无法迁移', true);
+    return;
+  }
+  const dst = getNotes(targetKey);
+  const merged = dst.trim() ? `${dst}\n\n── 迁移自：${sourceKey} ──\n${src}` : src;
+  setNotes(targetKey, merged);
+  setNotes(sourceKey, '');
+
+  // 防止 openPdf() 内的 forceSaveNotes() 把旧源笔记再次写回
+  if (currentKey === sourceKey) {
+    currentKey = null;
+    notesTextarea.value = '';
+    saveIndicator.textContent = '';
+  }
+
+  const targetFile = allFiles.find(f => f.relativePath === targetKey);
+  if (targetFile) openPdf(targetFile);
+  else {
+    currentKey = targetKey;
+    notesTextarea.value = merged;
+    notesForFile.textContent = targetKey;
+  }
+  stopMigrateMode();
+  toast(`迁移完成：${sourceKey.split('/').pop()} → ${targetKey.split('/').pop()}`);
+}
+
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+/* ── 自然排序函数（数字感知排序）── */
+function naturalSort(a, b) {
+  // 提取路径并转换为小写比较
+  const aStr = String(a).toLowerCase();
+  const bStr = String(b).toLowerCase();
+  
+  // 将字符串分解为数字和非数字部分
+  const aparts = aStr.match(/(\d+|[^\d]+)/g) || [];
+  const bparts = bStr.match(/(\d+|[^\d]+)/g) || [];
+  
+  for (let i = 0; i < Math.max(aparts.length, bparts.length); i++) {
+    const apart = aparts[i] || '';
+    const bpart = bparts[i] || '';
+    
+    // 如果都是数字，按数字比较
+    const aNum = parseInt(apart, 10);
+    const bNum = parseInt(bpart, 10);
+    
+    if (!isNaN(aNum) && !isNaN(bNum)) {
+      if (aNum !== bNum) return aNum - bNum;
+    } else {
+      // 否则按字符串比较
+      if (apart !== bpart) return apart.localeCompare(bpart, 'zh');
+    }
+  }
+  return 0;
+}
+
+/* ── 打开 PDF（Blob URL + iframe，浏览器原生渲染）── */
+async function openPdf(file) {
+  if (currentKey === file.relativePath) return;
+  forceSaveNotes();
+  currentKey = file.relativePath;
+  currentFileName.textContent = file.name;
+  notesForFile.textContent = file.relativePath;
+  notesTextarea.disabled = false;
+  notesTextarea.value = getNotes(file.relativePath);
+  renderNoteImagePreview();
+  saveIndicator.textContent = '';
+  renderSidebar();
+  updateRecentEditView();
+  
+  // 自动滚动到最新的笔记记录位置
+  setTimeout(() => {
+    scrollToLatestRecord();
+  }, 50);
+
+  if (_prevBlobUrl) { URL.revokeObjectURL(_prevBlobUrl); _prevBlobUrl = null; }
+  welcomeScreen.style.display = 'none';
+  pdfFrame.style.display = 'block';
+  try {
+    const rawFile = file.handle ? await file.handle.getFile() : file.fileObj;
+    const blob = new Blob([await rawFile.arrayBuffer()], { type: 'application/pdf' });
+    _prevBlobUrl = URL.createObjectURL(blob);
+    pdfFrame.src = _prevBlobUrl;
+  } catch (e) {
+    pdfFrame.style.display = 'none';
+    welcomeScreen.style.display = '';
+    toast('⚠ PDF 加载失败：' + e.message, true);
+  }
+}
+
+/* ── 选项卡切换 ── */
+document.getElementById('editTabBtn').addEventListener('click', () => switchNotesTab('edit'));
+document.getElementById('recentTabBtn').addEventListener('click', () => switchNotesTab('recent'));
+
+function switchNotesTab(tabName) {
+  // 更新选项卡激活状态
+  document.querySelectorAll('.notes-tab').forEach(tab => {
+    tab.classList.toggle('active', tab.dataset.view === tabName);
+  });
+  
+  // 更新视图激活状态
+  document.getElementById('notesEditView').classList.toggle('active', tabName === 'edit');
+  document.getElementById('recentEditView').classList.toggle('active', tabName === 'recent');
+  
+  // 如果切换到最近编辑视图，更新数据
+  if (tabName === 'recent') {
+    updateRecentEditView();
+  }
+}
+
+/* ── 从笔记内容中提取带时间戳的记录 ── */
+function extractTimestampedRecords(noteContent, filePath) {
+  const records = [];
+  
+  // 匹配时间戳格式：[YYYY/MM/DD HH:MM:SS]
+  // 使用行级别的匹配，避免换行符问题
+  const lines = noteContent.split('\n');
+  const timestampRegex = /^\[(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2})\]\s*(.*)$/;
+  
+  lines.forEach((line, index) => {
+    const match = line.match(timestampRegex);
+    if (match) {
+      const timestamp = match[1];
+      const content = (match[2] || '').trim().slice(0, 100); // 限制显示长度
+      
+      try {
+        // 将 YYYY/MM/DD 格式转换为 YYYY-MM-DD 进行日期解析
+        const dateStr = timestamp.replace(/\//g, '-');
+        const date = new Date(dateStr);
+        // 验证日期是否有效
+        if (!isNaN(date.getTime())) {
+          records.push({
+            timestamp,
+            date,
+            content,
+            filePath,
+            lineNumber: index
+          });
+        }
+      } catch (e) {
+        console.warn('时间戳解析失败:', timestamp, e);
+      }
+    }
+  });
+  
+  return records;
+}
+
+/* ── 更新最近编辑视图 ── */
+function updateRecentEditView() {
+  const recentEditList = document.getElementById('recentEditList');
+  const recentEditEmpty = document.getElementById('recentEditEmpty');
+  const allRecords = [];
+  
+  // 从所有笔记中提取记录
+  Object.entries(notesData).forEach(([filePath, content]) => {
+    if (content && content.trim()) {
+      const records = extractTimestampedRecords(content, filePath);
+      allRecords.push(...records);
+    }
+  });
+  
+  // 按时间倒序排列（最新的在前）
+  allRecords.sort((a, b) => b.date - a.date);
+  
+  recentEditList.innerHTML = '';
+  
+  if (allRecords.length === 0) {
+    recentEditEmpty.style.display = 'flex';
+  } else {
+    recentEditEmpty.style.display = 'none';
+    
+    // 按日期分组
+    const groupedByDate = {};
+    allRecords.forEach(record => {
+      const dateStr = record.date.toLocaleDateString('zh-CN');
+      if (!groupedByDate[dateStr]) {
+        groupedByDate[dateStr] = [];
+      }
+      groupedByDate[dateStr].push(record);
+    });
+    
+    // 按日期倒序显示（最新的日期在前）
+    const dates = Object.keys(groupedByDate).sort((a, b) => {
+      return new Date(b) - new Date(a);
+    });
+    
+    dates.forEach(dateStr => {
+      const group = document.createElement('div');
+      group.className = 'recent-edit-date-group';
+      
+      // 添加日期标题
+      const header = document.createElement('div');
+      header.className = 'recent-edit-date-header';
+      const date = new Date(dateStr);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      date.setHours(0, 0, 0, 0);
+      
+      let displayDate = dateStr;
+      if (date.getTime() === today.getTime()) {
+        displayDate = '📅 今天';
+      } else {
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        if (date.getTime() === yesterday.getTime()) {
+          displayDate = '📅 昨天';
+        }
+      }
+      header.textContent = displayDate + ` (${groupedByDate[dateStr].length} 条)`;
+      group.appendChild(header);
+      
+      // 添加该日期的所有记录
+      groupedByDate[dateStr].forEach(record => {
+        const item = document.createElement('div');
+        item.className = 'recent-edit-item';
+        
+        const fileName = record.filePath.split('/').pop();
+        const folderName = record.filePath.split('/').slice(0, -1).join('/');
+        
+        item.innerHTML = `
+          <div class="recent-edit-time">🕐 ${record.timestamp.split(' ')[1]}</div>
+          <div class="recent-edit-file">${folderName ? '📁 ' + folderName + ' / ' : ''}📄 ${fileName}</div>
+          <div class="recent-edit-content">${esc(record.content)}</div>
+        `;
+        
+        item.addEventListener('click', () => {
+          // 找到对应的PDF文件并打开
+          const file = allFiles.find(f => f.relativePath === record.filePath);
+          if (file) {
+            openPdf(file);
+            // 打开后切换到笔记编辑视图并滚动到对应位置
+            setTimeout(() => {
+              switchNotesTab('edit');
+              scrollToRecord(record);
+            }, 500);
+          } else {
+            toast('⚠ 对应的 PDF 文件未找到', true);
+          }
+        });
+        
+        group.appendChild(item);
+      });
+      
+      recentEditList.appendChild(group);
+    });
+  }
+}
+
+/* ── 滚动笔记到指定记录位置 ── */
+function scrollToRecord(record) {
+  const textarea = document.getElementById('notesTextarea');
+  const content = textarea.value;
+  
+  // 查找该记录在文本中的位置（按行搜索）
+  const lines = content.split('\n');
+  const searchTimestamp = record.timestamp;
+  let targetLineIndex = -1;
+  
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].indexOf('[' + searchTimestamp + ']') === 0) {
+      targetLineIndex = i;
+      break;
+    }
+  }
+  
+  if (targetLineIndex >= 0) {
+    // 获取该行在文本中的位置
+    const position = lines.slice(0, targetLineIndex).join('\n').length + (targetLineIndex > 0 ? 1 : 0);
+    
+    textarea.focus();
+    textarea.setSelectionRange(position, position);
+    
+    // 计算行数对应的滚动位置
+    const lineHeight = parseFloat(window.getComputedStyle(textarea).lineHeight);
+    const scrollTop = targetLineIndex * lineHeight;
+    
+    textarea.scrollTop = Math.max(0, scrollTop - textarea.clientHeight / 3);
+    
+    // 高亮该行（可选效果）
+    highlightLine(position);
+  }
+}
+
+/* ── 高亮记录行（暂时闪烁效果）── */
+function highlightLine(position) {
+  const textarea = document.getElementById('notesTextarea');
+  
+  // 临时改变焦点样式
+  const originalBG = textarea.style.backgroundColor;
+  textarea.style.backgroundColor = 'rgba(88,166,255,.15)';
+  
+  setTimeout(() => {
+    textarea.style.backgroundColor = originalBG;
+  }, 1500);
+}
+
+/* ── 滚动到最新的记录 ── */
+function scrollToLatestRecord() {
+  const textarea = document.getElementById('notesTextarea');
+  const content = textarea.value;
+  
+  if (!content.trim()) return;
+  
+  // 查找所有带时间戳的行
+  const lines = content.split('\n');
+  const timestampRegex = /^\[(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2})\]/;
+  let lastTimestampLineIndex = -1;
+  
+  // 从后往前找最后一个时间戳
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (timestampRegex.test(lines[i])) {
+      lastTimestampLineIndex = i;
+      break;
+    }
+  }
+  
+  if (lastTimestampLineIndex >= 0) {
+    // 获取该行在文本中的位置
+    const position = lines.slice(0, lastTimestampLineIndex).join('\n').length + (lastTimestampLineIndex > 0 ? 1 : 0);
+    
+    textarea.focus();
+    textarea.setSelectionRange(position, position);
+    
+    // 计算行数对应的滚动位置
+    const lineHeight = parseFloat(window.getComputedStyle(textarea).lineHeight);
+    const scrollTop = lastTimestampLineIndex * lineHeight;
+    
+    textarea.scrollTop = Math.max(0, scrollTop - textarea.clientHeight / 3);
+    highlightLine(position);
+  }
+}
+
+/* ── 高亮记录行（暂时闪烁效果）── */
+function highlightLine(position) {
+  const textarea = document.getElementById('notesTextarea');
+  
+  // 临时改变焦点样式
+  const originalBG = textarea.style.backgroundColor;
+  textarea.style.backgroundColor = 'rgba(88,166,255,.15)';
+  
+  setTimeout(() => {
+    textarea.style.backgroundColor = originalBG;
+  }, 1500);
+}
+
+/* ── 搜索 ── */
+searchInput.addEventListener('input', () => renderSidebar());
+
+/* ── 笔记输入监听 ── */
+notesTextarea.addEventListener('input', () => { scheduleSave(); });
+notesTextarea.addEventListener('paste', handleNotesPaste);
+
+async function handleNotesPaste(e) {
+  const items = Array.from(e.clipboardData?.items || []);
+  const imageItems = items.filter(it => it.type && it.type.startsWith('image/'));
+
+  // 仅文字粘贴时保持默认行为
+  if (!imageItems.length) {
+    setTimeout(scheduleSave, 50);
+    return;
+  }
+
+  e.preventDefault();
+  
+  // 保存当前滚动位置
+  const scrollPos = notesTextarea.scrollTop;
+
+  let inserted = 0;
+  const base = getImageBaseName();
+  // 生成本地时间戳（北京时间：YYYY-MM-DD-HH-MM-SS-mmm）
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  const seconds = String(now.getSeconds()).padStart(2, '0');
+  const ms = String(now.getMilliseconds()).padStart(3, '0');
+  const stamp = `${year}-${month}-${day}-${hours}-${minutes}-${seconds}-${ms}`;
+  
+  for (let i = 0; i < imageItems.length; i++) {
+    const file = imageItems[i].getAsFile();
+    if (!file) continue;
+    const ext = (file.type.split('/')[1] || 'png').split(';')[0];
+    const imageName = `${base}_${stamp}_${i + 1}.${ext}`;
+    let imageRef = null;
+    if (rootDirHandle) {
+      const saved = await savePastedImageFile(file, i + 1);
+      if (saved) imageRef = saved.rel;
+    }
+    if (!imageRef) imageRef = await fileToDataUrl(file); // 回退
+    insertAtCursor(notesTextarea, `\n![${imageName}](${imageRef})\n`);
+    inserted++;
+  }
+
+  if (inserted) {
+    scheduleSave();
+    await renderNoteImagePreview();
+    toast(rootDirHandle
+      ? `已粘贴 ${inserted} 张图片（文件模式：${imageDirName}/）`
+      : `已粘贴 ${inserted} 张图片（Base64 回退）`);
+    // 粘贴完成后恢复原滚动位置
+    notesTextarea.scrollTop = scrollPos;
+  }
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function insertAtCursor(el, text) {
+  const start = el.selectionStart ?? el.value.length;
+  const end = el.selectionEnd ?? start;
+  el.value = el.value.slice(0, start) + text + el.value.slice(end);
+  const pos = start + text.length;
+  el.selectionStart = el.selectionEnd = pos;
+}
+
+function scheduleSave() {
+  saveIndicator.style.color = 'var(--yellow)';
+  saveIndicator.textContent = '未保存…';
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(forceSaveNotes, 900);
+}
+
+function forceSaveNotes() {
+  clearTimeout(saveTimer);
+  if (!currentKey) return;
+  const textToSave = notesTextarea.value;
+  setNotes(currentKey, textToSave);
+  saveIndicator.style.color = 'var(--green)';
+  saveIndicator.textContent = notesHandle ? '✓ 已写入文件' : '✓ 已保存';
+  renderSidebar();
+  // 如果最近编辑视图正在显示，则更新它
+  if (document.getElementById('recentEditView').classList.contains('active')) {
+    updateRecentEditView();
+  }
+  // 显示保存成功提示
+  showSaveNotification();
+}
+
+function showSaveNotification() {
+  const saveNotification = $('saveNotification');
+  if (!saveNotification) return;
+  saveNotification.classList.add('show');
+  clearTimeout(saveNotificationTimer);
+  saveNotificationTimer = setTimeout(() => {
+    saveNotification.classList.remove('show');
+  }, 2000);  // 显示2秒后自动隐藏
+}
+
+/* ── 清除笔记 ── */
+$('clearNoteBtn').addEventListener('click', () => {
+  if (!currentKey) { toast('请先选择一个 PDF 文件'); return; }
+  if (!confirm(`确定清除「${currentKey}」的笔记？`)) return;
+  setNotes(currentKey, '');
+  notesTextarea.value = '';
+  renderNoteImagePreview();
+  saveIndicator.textContent = '';
+  renderSidebar();
+  toast('笔记已清除');
+});
+
+/* ── 导出笔记（JSON 格式，可重新导入）── */
+$('exportBtn').addEventListener('click', () => {
+  forceSaveNotes();
+  // 合并内存与 localStorage，以 notesData 为主
+  const allNotes = { ...notesData };
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k.startsWith(NOTES_PREFIX)) {
+      const rel = k.slice(NOTES_PREFIX.length);
+      if (!allNotes[rel]) allNotes[rel] = localStorage.getItem(k);
+    }
+  }
+  const count = Object.keys(allNotes).length;
+  if (!count) { toast('暂无保存的笔记'); return; }
+  const data = { version: 1, exported: new Date().toISOString(), notes: allNotes };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const a    = Object.assign(document.createElement('a'), { href: url, download: `pdf笔记_${new Date().toISOString().slice(0,10)}.json` });
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  toast(`已导出 ${count} 份笔记 → pdf笔记_日期.json`);
+});
+
+/* ── 导出为 Word（包含笔记和图片，按文件夹序号标注）── */
+$('exportWordBtn').addEventListener('click', async () => {
+  forceSaveNotes();
+  if (!allFiles.length) { toast('暂无 PDF 文件'); return; }
+  if (!Object.keys(notesData).length) { toast('暂无笔记内容'); return; }
+
+  // 检查 docx 库是否加载
+  if (!window.docxLoaded || typeof docx === 'undefined') {
+    // 等待库加载（最多等待 3 秒）
+    let retries = 0;
+    const waitForDocx = setInterval(() => {
+      retries++;
+      if (window.docxLoaded && typeof docx !== 'undefined') {
+        clearInterval(waitForDocx);
+        // 库已加载，继续导出
+        performWordExport();
+      } else if (retries >= 30) {
+        clearInterval(waitForDocx);
+        toast('⚠ Word 库加载失败，请检查网络连接或稍后重试', true);
+      }
+    }, 100);
+    return;
+  }
+
+  performWordExport();
+});
+
+// 获取图片尺寸的辅助函数
+async function getImageDimensions(data, mimeType) {
+  return new Promise((resolve) => {
+    const blob = new Blob([data], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve({ width: 400, height: 300 }); // 默认尺寸
+    };
+    img.src = url;
+  });
+}
+
+// 根据原始比例计算尺寸
+function calculateImageSize(origWidth, origHeight, maxWidth = 400) {
+  if (origWidth <= 0 || origHeight <= 0) return { width: maxWidth, height: 300 };
+  const ratio = origHeight / origWidth;
+  return {
+    width: maxWidth,
+    height: Math.round(maxWidth * ratio)
+  };
+}
+
+async function performWordExport() {
+  if (typeof docx === 'undefined') {
+    toast('⚠ Word 库加载失败，请刷新页面后重试', true);
+    return;
+  }
+
+  toast('正在生成 Word 文档...', false);
+
+  try {
+    const sections = [];
+    const folderGroups = {};
+
+    // 只处理有笔记的文件，按文件夹分组
+    let fileIndex = 0;
+    allFiles.forEach((file) => {
+      if (notesData[file.relativePath]) {
+        fileIndex++;
+        const folder = file.relativePath.split('/').slice(0, -1).join('/') || '根目录';
+        if (!folderGroups[folder]) folderGroups[folder] = [];
+        folderGroups[folder].push({ ...file, index: fileIndex });
+      }
+    });
+
+    if (!Object.keys(folderGroups).length) {
+      toast('暂无有笔记的文件可导出');
+      return;
+    }
+
+    // 辅助函数：阿拉伯数字转中文小写数字（支持 1-999）
+    function toChineseNumber(num) {
+      const chnNum = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+      const chnUnit = ['', '十', '百', '千'];
+      if (num === 0) return '零';
+      if (num < 10) return chnNum[num];
+      
+      let str = '';
+      let unitPos = 0;
+      let needZero = false;
+      
+      while (num > 0) {
+        const digit = num % 10;
+        if (digit === 0) {
+          needZero = true;
+        } else {
+          if (needZero) {
+            str = '零' + str;
+            needZero = false;
+          }
+          // 十位数特殊处理：10-19 写作"十一"到"十九"，不写"一十一"
+          if (unitPos === 1 && num >= 10 && num < 20) {
+            str = chnUnit[1] + chnNum[digit] + str;
+            break;
+          }
+          str = chnNum[digit] + (unitPos > 0 ? chnUnit[unitPos] : '') + str;
+        }
+        unitPos++;
+        num = Math.floor(num / 10);
+      }
+      return str;
+    }
+
+    // 遍历每个文件夹及其文件
+    for (const folderName of Object.keys(folderGroups).sort((a, b) => naturalSort(a, b))) {
+      const files = folderGroups[folderName];
+
+      // 文件夹标题
+      sections.push(
+        new docx.Paragraph({
+          text: folderName || '根目录',
+          heading: docx.HeadingLevel.HEADING_1
+        })
+      );
+
+      // 遍历该文件夹中的文件
+      for (const file of files) {
+        const noteContent = notesData[file.relativePath] || '';
+        
+        // 文件号和名称（使用中文数字编号）
+        const chineseIndex = toChineseNumber(file.index);
+        sections.push(
+          new docx.Paragraph({
+            text: `${chineseIndex}. ${file.name}`,
+            heading: docx.HeadingLevel.HEADING_2
+          })
+        );
+
+        // 笔记内容（按行处理）
+        if (noteContent) {
+          const lines = noteContent.split('\n');
+          let imageLinkCount = 0;
+          let keyPointCounter = 1; // 关键点计数器
+
+          for (const line of lines) {
+            // 检查是否是关键点行（以 ▶ 开头，前面可能有 [Px] 前缀）
+            const keyPointMatch = line.match(/^(\[P\d+\]\s*)?▶/);
+            let processedLine = line;
+
+            if (keyPointMatch) {
+              // 为关键点添加数字序号
+              processedLine = `${keyPointCounter++}. ${line}`;
+            }
+
+            // 检查是否是图片链接
+            const imgMatch = processedLine.match(/!\[([^\]]*)\]\(([^)]+)\)/);
+            
+            if (imgMatch) {
+              imageLinkCount++;
+              const [, altText, imagePath] = imgMatch;
+              
+              // 尝试加载文件系统中的图片
+              if (imageDirHandle && imagePath && !imagePath.startsWith('data:')) {
+                try {
+                  const imgFileHandle = imageHandleMap.get(imagePath);
+                  
+                  if (imgFileHandle) {
+                    const imgFile = await imgFileHandle.getFile();
+                    const imgBuffer = await imgFile.arrayBuffer();
+                    const mimeType = imgFile.type || 'image/jpeg';
+                    
+                    // 获取原始图片尺寸
+                    const { width: origWidth, height: origHeight } = await getImageDimensions(new Uint8Array(imgBuffer), mimeType);
+                    const { width: newWidth, height: newHeight } = calculateImageSize(origWidth, origHeight);
+                    
+                    sections.push(
+                      new docx.Paragraph({
+                        text: `[图片 ${imageLinkCount}: ${altText}]`,
+                        style: 'Normal',
+                        spacing: { line: 240 }
+                      })
+                    );
+
+                    sections.push(
+                      new docx.Paragraph({
+                        children: [
+                          new docx.ImageRun({
+                            data: imgBuffer,
+                            transformation: { width: newWidth, height: newHeight },
+                            type: mimeType
+                          })
+                        ],
+                        spacing: { line: 240, after: 240 }
+                      })
+                    );
+                  } else {
+                    sections.push(
+                      new docx.Paragraph({
+                        text: `[图片缺失: ${imagePath}]`,
+                        style: 'Normal'
+                      })
+                    );
+                  }
+                } catch (err) {
+                  sections.push(
+                    new docx.Paragraph({
+                      text: `[图片加载失败: ${imagePath}]`,
+                      style: 'Normal'
+                    })
+                  );
+                }
+              } else if (imagePath && imagePath.startsWith('data:')) {
+                // Base64 图片
+                try {
+                  const matches = imagePath.match(/data:image\/([^;]+);base64,(.+)/);
+                  if (matches) {
+                    const [, format, base64] = matches;
+                    const binaryString = atob(base64);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                      bytes[i] = binaryString.charCodeAt(i);
+                    }
+                    
+                    // 获取原始图片尺寸
+                    const { width: origWidth, height: origHeight } = await getImageDimensions(bytes.buffer, 'image/' + format);
+                    const { width: newWidth, height: newHeight } = calculateImageSize(origWidth, origHeight);
+                    
+                    sections.push(
+                      new docx.Paragraph({
+                        text: `[图片 ${imageLinkCount}: ${altText}]`,
+                        style: 'Normal',
+                        spacing: { line: 240 }
+                      })
+                    );
+
+                    sections.push(
+                      new docx.Paragraph({
+                        children: [
+                          new docx.ImageRun({
+                            data: bytes.buffer,
+                            transformation: { width: newWidth, height: newHeight },
+                            type: 'image/' + format
+                          })
+                        ],
+                        spacing: { line: 240, after: 240 }
+                      })
+                    );
+                  }
+                } catch (err) {
+                  console.error('Base64 图片处理失败:', err);
+                }
+              }
+            } else if (processedLine.trim()) {
+              // 普通文本行
+              sections.push(
+                new docx.Paragraph({
+                  text: processedLine,
+                  style: 'Normal',
+                  spacing: { line: 240 }
+                })
+              );
+            } else {
+              // 空行
+              sections.push(new docx.Paragraph({ 
+                text: '',
+                spacing: { line: 240 }
+              }));
+            }
+          }
+        }
+
+        // 文件之间的分隔
+        sections.push(
+          new docx.Paragraph({
+            text: '─'.repeat(40),
+            alignment: docx.AlignmentType.CENTER,
+            spacing: { line: 240, after: 240 }
+          })
+        );
+      }
+
+      // 文件夹之间的分隔
+      sections.push(new docx.Paragraph({ 
+        text: '',
+        spacing: { line: 360 }
+      }));
+    }
+
+    // 创建 Word 文档
+    const doc = new docx.Document({
+      sections: [
+        {
+          properties: {},
+          children: sections
+        }
+      ]
+    });
+
+    // 导出
+    const folderName = rootDirHandle ? rootDirHandle.name : '未命名';
+    const fileName = `${folderName}笔记导出_${new Date().toISOString().slice(0, 10)}.docx`;
+    
+    docx.Packer.toBlob(doc).then(blob => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 100);
+    });
+
+    toast(`已导出 Word 文档 → ${fileName}`);
+  } catch (err) {
+    console.error('导出 Word 失败:', err);
+    toast(`⚠ 导出失败：${err.message}`, true);
+  }
+}
+
+/* ── 导入笔记（从 pdf笔记.json 合并）── */
+$('importBtn').addEventListener('click', async () => {
+  const doImport = async (file) => {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    const imported = { ...(parsed.notes || {}), ...(parsed.archived || {}) };
+    const keys = Object.keys(imported);
+    if (!keys.length) { toast('文件中没有笔记数据', true); return; }
+    let added = 0, updated = 0;
+    const choice = keys.some(k => notesData[k])
+      ? confirm(`发现 ${keys.filter(k => notesData[k]).length} 条已有笔记与导入内容键名重复。\n确定：用导入内容覆盖\n取消：跳过已有，只导入新条目`)
+      : true; // 没有冲突，直接全部导入
+    keys.forEach(k => {
+      if (notesData[k] && !choice) return; // 跳过已有
+      if (notesData[k]) updated++; else added++;
+      notesData[k] = imported[k];
+      localStorage.setItem(NOTES_PREFIX + k, imported[k]);
+    });
+    scheduleFileWrite();
+    if (currentKey) {
+      notesTextarea.value = getNotes(currentKey);
+      renderNoteImagePreview();
+    }
+    renderSidebar();
+    toast(`导入完成：新增 ${added} 条${updated ? `，覆盖 ${updated} 条` : ''}`);
+  };
+
+  if ('showOpenFilePicker' in window) {
+    try {
+      const [fh] = await window.showOpenFilePicker({
+        types: [{ description: '笔记 JSON 文件', accept: { 'application/json': ['.json'] } }],
+        multiple: false
+      });
+      await doImport(await fh.getFile());
+    } catch(e) {
+      if (e.name !== 'AbortError') toast('⚠ 导入失败：' + e.message, true);
+    }
+  } else {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = '.json';
+    inp.addEventListener('change', async () => {
+      try { await doImport(inp.files[0]); }
+      catch(e) { toast('⚠ 导入失败：' + e.message, true); }
+    });
+    inp.click();
+  }
+});
+
+/* ── 页面关闭时保存和清理 ── */
+window.addEventListener('beforeunload', () => {
+  forceSaveNotes();   // 同步写 localStorage
+  flushNotesFile();   // 尽力写文件（浏览器不保证等待，但正常操作中文件已实时更新）
+  
+  // 释放所有 blob URL 以防止内存泄漏
+  if (_prevBlobUrl) {
+    URL.revokeObjectURL(_prevBlobUrl);
+    _prevBlobUrl = null;
+  }
+  clearPreviewObjectUrls();
+});
+
+/* ── 重置布局 ── */
+$('resetLayoutBtn').addEventListener('click', () => {
+  $('sidebar').style.width = '270px';
+  $('notesPanel').style.width = '550px';
+  $('notesTextarea').style.minHeight = '300px';
+  // 重置时也恢复图片预览框的显示状态
+  const wrapper = $('notesImagePreviewWrapper');
+  if (wrapper && wrapper.classList.contains('hidden')) {
+    wrapper.classList.remove('hidden');
+  }
+  toast('布局已重置');
+});
+
+/* ── 隐藏/显示图片预览框 ── */
+$('toggleImagePreviewBtn').addEventListener('click', () => {
+  const wrapper = $('notesImagePreviewWrapper');
+  wrapper.classList.toggle('hidden');
+});
+
+// 初始化：默认隐藏图片预览框
+window.addEventListener('load', () => {
+  const wrapper = $('notesImagePreviewWrapper');
+  if (wrapper) {
+    wrapper.classList.add('hidden');
+  }
+});
+
+migrateNoteBtn.addEventListener('click', () => {
+  if (migrateMode) {
+    stopMigrateMode();
+    toast('已退出迁移模式');
+    return;
+  }
+  startMigrateMode();
+});
+
+/* ── 侧边栏宽度拖动 ── */
+(function () {
+  const el = $('vResizer'), sb = $('sidebar');
+  let drag = false, x0, w0, pendingX = 0, rafId = 0;
+
+  const applyWidth = () => {
+    rafId = 0;
+    sb.style.width = Math.max(150, Math.min(500, w0 + pendingX - x0)) + 'px';
+  };
+
+  el.addEventListener('mousedown', e => {
+    drag = true;
+    x0 = e.clientX;
+    w0 = sb.offsetWidth;
+    pendingX = x0;
+    el.classList.add('drag');
+    document.body.classList.add('layout-dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!drag) return;
+    pendingX = e.clientX;
+    if (!rafId) rafId = requestAnimationFrame(applyWidth);
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!drag) return;
+    drag = false;
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; applyWidth(); }
+    el.classList.remove('drag');
+    document.body.classList.remove('layout-dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+})();
+
+/* ── 笔记面板宽度拖动 ── */
+(function () {
+  const el = $('hResizer'), panel = $('notesPanel');
+  let drag = false, x0, w0, pendingX = 0, rafId = 0;
+
+  const applyWidth = () => {
+    rafId = 0;
+    panel.style.width = Math.max(180, Math.min(600, w0 - (pendingX - x0))) + 'px';
+  };
+
+  el.addEventListener('mousedown', e => {
+    drag = true;
+    x0 = e.clientX;
+    w0 = panel.offsetWidth;
+    pendingX = x0;
+    el.classList.add('drag');
+    document.body.classList.add('layout-dragging');
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!drag) return;
+    pendingX = e.clientX;
+    if (!rafId) rafId = requestAnimationFrame(applyWidth);
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!drag) return;
+    drag = false;
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; applyWidth(); }
+    el.classList.remove('drag');
+    document.body.classList.remove('layout-dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+})();
+
+/* ── 笔记编辑框和图片预览高度拖动 ── */
+(function () {
+  const resizer = $('noteImageResizer');
+  const textarea = $('notesTextarea');
+  const preview = $('notesImagePreview');
+  const editView = $('notesEditView');
+  let drag = false, y0, resizerInitialTop, pendingY = 0, rafId = 0;
+
+  const applyHeight = () => {
+    rafId = 0;
+    // 分隔符应该到达的新位置（相对于editView的顶部）
+    const resizerNewTop = resizerInitialTop + (pendingY - y0);
+    
+    // 编辑视图总高度
+    const editViewHeight = editView.offsetHeight;
+    // 头部高度约40px，分隔符4px，预览框最小30px
+    const minTextareaHeight = 60;
+    const minPreviewHeight = 30;
+    const maxTextareaHeight = editViewHeight - 40 - 4 - minPreviewHeight;
+    
+    // 分隔符的新位置应该在合理范围内
+    const constrainedResizerTop = Math.max(
+      40 + minTextareaHeight,  // textarea最小高度后的分隔符位置
+      Math.min(resizerNewTop, maxTextareaHeight + 40)  // textarea最大高度后的分隔符位置
+    );
+    
+    // 新的textarea高度 = 分隔符位置 - 头部高度
+    const newTextareaHeight = constrainedResizerTop - 40;
+    textarea.style.minHeight = newTextareaHeight + 'px';
+  };
+
+  resizer.addEventListener('mousedown', e => {
+    drag = true;
+    y0 = e.clientY;
+    // 获取分隔符相对于editView的初始位置
+    const editViewRect = editView.getBoundingClientRect();
+    const resizerRect = resizer.getBoundingClientRect();
+    resizerInitialTop = resizerRect.top - editViewRect.top;
+    pendingY = y0;
+    resizer.classList.add('drag');
+    document.body.classList.add('layout-dragging');
+    document.body.style.cursor = 'ns-resize';
+    document.body.style.userSelect = 'none';
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!drag) return;
+    pendingY = e.clientY;
+    if (!rafId) rafId = requestAnimationFrame(applyHeight);
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!drag) return;
+    drag = false;
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; applyHeight(); }
+    resizer.classList.remove('drag');
+    document.body.classList.remove('layout-dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+})();
+
+/* ── 笔记文本框Tab键缩进 ── */
+notesTextarea.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab') {
+    e.preventDefault(); // 阻止默认的焦点切换行为
+    
+    const textarea = notesTextarea;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    
+    // 插入两个空格作为缩进（可以根据需要改为 \t 或四个空格）
+    const indent = '\t';
+    
+    // 如果选中了多行文本，为每一行添加缩进
+    if (start !== end) {
+      // 获取选中文本
+      const selectedText = textarea.value.substring(start, end);
+      
+      // 计算选中区域的行起始和结束位置
+      const lines = textarea.value.substring(0, start).split('\n');
+      const startLine = lines.length - 1; // 选中区域起始行号（0-based）
+      const startCol = lines[lines.length - 1].length; // 选中区域起始列
+      
+      const fullText = textarea.value;
+      const textBeforeSelection = fullText.substring(0, end);
+      const endLine = textBeforeSelection.split('\n').length - 1; // 选中区域结束行号
+      
+      // 处理每一行
+      const allLines = fullText.split('\n');
+      const newLines = [...allLines];
+      
+      for (let i = startLine; i <= endLine; i++) {
+        if (i < allLines.length) {
+          newLines[i] = indent + allLines[i];
+        }
+      }
+      
+      // 更新文本
+      textarea.value = newLines.join('\n');
+      
+      // 恢复选中区域（保持选中状态）
+      const newStart = start + indent.length;
+      const newEnd = end + indent.length * (endLine - startLine + 1);
+      textarea.setSelectionRange(newStart, newEnd);
+    } else {
+      // 单行模式：在光标位置插入缩进
+      const newValue = textarea.value.substring(0, start) + indent + textarea.value.substring(end);
+      textarea.value = newValue;
+      
+      // 将光标移动到缩进之后
+      const newPos = start + indent.length;
+      textarea.setSelectionRange(newPos, newPos);
+    }
+    
+    // 触发input事件以触发自动保存
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+});
+
+/* ── Shift+Tab 减少缩进 ── */
+notesTextarea.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab' && e.shiftKey) {
+    e.preventDefault(); // 阻止默认行为
+    
+    const textarea = notesTextarea;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    
+    // 如果选中了多行文本，为每一行减少缩进
+    if (start !== end) {
+      // 计算选中区域的行起始和结束位置
+      const lines = textarea.value.substring(0, start).split('\n');
+      const startLine = lines.length - 1; // 选中区域起始行号（0-based）
+      
+      const fullText = textarea.value;
+      const textBeforeSelection = fullText.substring(0, end);
+      const endLine = textBeforeSelection.split('\n').length - 1; // 选中区域结束行号
+      
+      // 处理每一行
+      const allLines = fullText.split('\n');
+      const newLines = [...allLines];
+      let removedCount = 0; // 总共移除的字符数
+      const perLineRemoved = []; // 记录每行移除的字符数
+      
+      for (let i = startLine; i <= endLine; i++) {
+        if (i < allLines.length) {
+          const line = allLines[i];
+          // 移除开头的两个空格或一个制表符
+          if (line.startsWith('  ')) {
+            newLines[i] = line.substring(2);
+            perLineRemoved[i] = 2;
+            removedCount += 2;
+          } else if (line.startsWith('\t')) {
+            newLines[i] = line.substring(1);
+            perLineRemoved[i] = 1;
+            removedCount += 1;
+          } else {
+            perLineRemoved[i] = 0;
+          }
+        }
+      }
+      
+      // 更新文本
+      textarea.value = newLines.join('\n');
+      
+      // 计算新的选中区域
+      let newStart = start;
+      for (let i = startLine; i < startLine; i++) {
+        newStart -= perLineRemoved[i] || 0;
+      }
+      
+      let newEnd = end;
+      for (let i = startLine; i <= endLine; i++) {
+        newEnd -= perLineRemoved[i] || 0;
+      }
+      
+      // 确保不超出边界
+      newStart = Math.max(0, Math.min(newStart, textarea.value.length));
+      newEnd = Math.max(newStart, Math.min(newEnd, textarea.value.length));
+      
+      textarea.setSelectionRange(newStart, newEnd);
+    } else {
+      // 单行模式：删除光标前的缩进
+      const cursorPos = start;
+      const textBeforeCursor = textarea.value.substring(0, cursorPos);
+      
+      // 检查光标前是否有两个空格或一个制表符
+      if (textBeforeCursor.endsWith('  ')) {
+        // 删除两个空格
+        const newValue = textarea.value.substring(0, cursorPos - 2) + textarea.value.substring(cursorPos);
+        textarea.value = newValue;
+        textarea.setSelectionRange(cursorPos - 2, cursorPos - 2);
+      } else if (textBeforeCursor.endsWith('\t')) {
+        // 删除一个制表符
+        const newValue = textarea.value.substring(0, cursorPos - 1) + textarea.value.substring(cursorPos);
+        textarea.value = newValue;
+        textarea.setSelectionRange(cursorPos - 1, cursorPos - 1);
+      }
+    }
+    
+    // 触发input事件以触发自动保存
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+});
+/* ── Toast ── */
+let toastTimer;
+function toast(msg, isErr = false) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.style.borderColor = isErr ? 'var(--red)' : 'var(--border)';
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2800);
+}
+</script>
+</body>
+</html>
